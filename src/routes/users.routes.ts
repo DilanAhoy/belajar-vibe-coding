@@ -3,6 +3,7 @@ import {
   registerUserService,
   loginUserService,
   getCurrentUserService,
+  logoutUserService,
   DuplicateEmailError,
   AuthenticationError,
   UnauthorizedError,
@@ -73,6 +74,28 @@ export const usersRoutes = new Elysia({ prefix: "/api" })
         return {
           data: user,
         };
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          set.status = 401;
+          return {
+            error: error.message,
+          };
+        }
+
+        set.status = 500;
+        return {
+          error: "Terjadi kesalahan pada server",
+        };
+      }
+    }
+  )
+  .delete(
+    "/users/logout",
+    async ({ headers, set }) => {
+      try {
+        const authHeader = headers["authorization"];
+        const result = await logoutUserService(authHeader);
+        return result;
       } catch (error) {
         if (error instanceof UnauthorizedError) {
           set.status = 401;
