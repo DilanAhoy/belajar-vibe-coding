@@ -1,51 +1,51 @@
-# [Feature] Registrasi User Baru (API & Database Migration)
+# [Feature] Login User & Session Management (API & Database Migration)
 
 ## 1. Ringkasan & Tujuan
-Fitur ini bertujuan untuk menyediakan endpoint registrasi akun pengguna baru pada aplikasi backend berbasis **Bun**, **ElysiaJS**, dan **Drizzle ORM (MySQL)**.
+Fitur ini bertujuan untuk mengimplementasikan fungsionalitas login pengguna dan pencatatan sesi login (*session*) ke dalam database. Pengguna yang berhasil login akan dibuatkan token sesi unik berbasis **UUID** yang disimpan ke dalam tabel `session` dan dikembalikan ke client.
 
-Dokumen perencanaan ini dirancang secara detail dan terstruktur sebagai panduan teknis yang mudah diikuti oleh junior programmer atau model AI agar implementasi berjalan tepat, teruji, dan sesuai arsitektur proyek.
+Dokumen perencanaan ini dirancang secara detail, terstruktur, dan presisi agar dapat diimplementasikan dengan mudah oleh junior programmer atau model AI.
 
 ---
 
 ## 2. Struktur Arsitektur & Folder
 
-Aplikasi menggunakan pemisahan tanggung jawab (*separation of concerns*) antara layer routing dan layer bisnis/service:
+Mengikuti standar arsitektur proyek yang memisahkan tanggung jawab antara *routing* dan *business logic*:
 
 ```text
 src/
 ├── db/
-│   ├── index.ts              # Konfigurasi instance Drizzle ORM
-│   └── schema.ts             # Definisi skema tabel database
+│   ├── index.ts              # Konfigurasi instance Drizzle ORM & koneksi MySQL
+│   └── schema.ts             # Definisi skema database (users, session)
 ├── routes/
-│   └── users.routes.ts       # Handler routing ElysiaJS & validasi request
+│   └── users.routes.ts       # Route handler ElysiaJS & validasi request input
 ├── services/
-│   └── users.services.ts     # Logika bisnis (cek duplikasi, hashing, query DB)
-└── index.ts                  # Entry point utama server ElysiaJS
+│   └── users.services.ts     # Logika bisnis autentikasi, verifikasi hash, generate token, DB insert
+└── index.ts                  # Entry point aplikasi ElysiaJS
 ```
 
-### Aturan Penamaan File & Tanggung Jawab:
-- **`src/routes/*.routes.ts`**: Menangani HTTP request, schema validation (Elysia `t`), pemetaan HTTP status code, dan memanggil fungsi service yang bersangkutan.
-- **`src/services/*.services.ts`**: Menangani logika bisnis inti, hashing password, interaksi dengan Drizzle DB, dan melemparkan custom error jika aturan bisnis dilanggar.
+### Konvensi File:
+- **Routes (`src/routes/users.routes.ts`)**: Menangani endpoint `POST /api/users/login`, memvalidasi request body menggunakan validator bawaan Elysia (`t`), mengatur HTTP status code, dan mengembalikan JSON response.
+- **Services (`src/services/users.services.ts`)**: Menangani pengecekan email user di database, verifikasi password hash menggunakan `Bun.password.verify`, pembuatan UUID token menggunakan `crypto.randomUUID()`, dan penyimpanan sesi ke tabel `session`.
 
 ---
 
 ## 3. Spesifikasi Skema Database
 
-Tabel yang dibuat/diperbarui adalah tabel **`users`** di file `src/db/schema.ts`.
+Tambahkan definisi tabel **`session`** pada file `src/db/schema.ts`.
 
-### Definisi Kolom:
+### Definisi Kolom Tabel `session`:
 | Nama Kolom | Tipe Data MySQL | Keterangan |
 | :--- | :--- | :--- |
-| `id` | `INT` / `BIGINT` | Primary Key, Auto Increment |
-| `name` | `VARCHAR(255)` | Not Null |
-| `email` | `VARCHAR(255)` | Not Null, Unique Index |
-| `password` | `VARCHAR(255)` | Not Null, Hash bcrypt |
-| `create_at` | `TIMESTAMP` | Default `CURRENT_TIMESTAMP`, Not Null |
+| `id` | `INT` | Primary Key, Auto Increment |
+| `token` | `VARCHAR(255)` | Not Null, Unique (Menampung string UUID token sesi) |
+| `user_id` | `INT` | Foreign Key mengarah ke `users.id`, Not Null |
+| `created_at` | `TIMESTAMP` | Default `CURRENT_TIMESTAMP`, Not Null |
 
-### Contoh Implementasi Skema (`src/db/schema.ts`):
+### Kode Skema yang Harus Ditambahkan ke `src/db/schema.ts`:
 ```typescript
 import { mysqlTable, int, varchar, timestamp } from "drizzle-orm/mysql-core";
 
+// Tabel users yang sudah ada sebelumnya
 export const users = mysqlTable("users", {
   id: int("id").autoincrement().primaryKey(),
   name: varchar("name", { length: 255 }).notNull(),
@@ -54,8 +54,18 @@ export const users = mysqlTable("users", {
   createAt: timestamp("create_at").defaultNow().notNull(),
 });
 
-export type User = typeof users.$inferSelect;
-export type NewUser = typeof users.$inferInsert;
+// Tabel session baru yang harus ditambahkan:
+export const sessions = mysqlTable("session", {
+  id: int("id").autoincrement().primaryKey(),
+  token: varchar("token", { length: 255 }).notNull().unique(),
+  userId: int("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export type Session = typeof sessions.$inferSelect;
+export type NewSession = typeof sessions.$inferInsert;
 ```
 
 ---
@@ -63,7 +73,7 @@ export type NewUser = typeof users.$inferInsert;
 ## 4. Spesifikasi Kontrak API
 
 ### Endpoint:
-`POST /api/users`
+`POST /api/users/login`
 
 ### Request Header:
 - `Content-Type: application/json`
@@ -71,171 +81,225 @@ export type NewUser = typeof users.$inferInsert;
 ### Request Body:
 ```json
 {
-  "name": "Dilan",
   "email": "dilan@localhost",
   "password": "rahasia"
 }
 ```
 
 ### Validasi Input:
-- `name`: Tipe `string`, wajib diisi (minimal 1 karakter).
 - `email`: Tipe `string`, format email valid, wajib diisi.
-- `password`: Tipe `string`, wajib diisi (disarankan minimal 6-8 karakter).
+- `password`: Tipe `string`, wajib diisi.
 
-### Response Sukses (HTTP 201 Created atau 200 OK):
+### Response Sukses (HTTP 200 OK):
+Kembalikan token UUID yang baru dibuat:
 ```json
 {
-  "data": "OK"
+  "data": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 }
 ```
+*(Catatan: Nilai string `"f47ac10b-..."` adalah nilai dinamis hasil generate UUID).*
 
-### Response Error - Email Duplikat (HTTP 400 Bad Request):
+### Response Error - Kredensial Salah (HTTP 400 Bad Request):
+Gunakan pesan error seragam baik ketika email tidak ditemukan maupun ketika password tidak cocok (untuk keamanan / mencegah user enumeration):
 ```json
 {
-  "error": "Email sudah terdaftar"
+  "error": "Email atau password salah"
 }
 ```
 
 ### Response Error - Validasi Input Gagal (HTTP 422 / 400):
-Dihandle otomatis oleh Elysia TypeBox validator jika format data tidak sesuai.
+Dihandle otomatis oleh validator Elysia TypeBox apabila format request body tidak sesuai.
 
 ---
 
 ## 5. Tahapan Implementasi Langkah-demi-Langkah
 
-Ikuti urutan langkah kerja berikut ini secara berurutan:
+Ikuti urutan langkah pengerjaan berikut ini:
 
-### Langkah 1: Perbarui Skema Database & Lakukan Sinkronisasi
+### Langkah 1: Perbarui Skema Database & Sinkronisasi
 1. Buka file `src/db/schema.ts`.
-2. Tambahkan kolom `password` dan pastikan nama kolom timestamp adalah `create_at` dengan default `CURRENT_TIMESTAMP` sesuai spesifikasi di atas.
-3. Jalankan perintah migrasi atau sinkronisasi skema ke database:
+2. Tambahkan deklarasi tabel `sessions` (dengan nama tabel di DB `"session"`) dan relasi FK ke tabel `users` seperti pada bagian spesifikasi skema di atas.
+3. Jalankan perintah push skema Drizzle ke database MySQL:
    ```bash
    bun run db:push
    ```
-4. Pastikan tabel `users` berhasil terupdate di database MySQL tanpa error.
+4. Pastikan tabel `session` berhasil terbuat di MySQL tanpa error.
 
 ---
 
-### Langkah 2: Buat Service Layer (`src/services/users.services.ts`)
-1. Buat direktori `src/services/` jika belum ada.
-2. Buat file baru bernama `src/services/users.services.ts`.
-3. Implementasikan fungsi `registerUser(payload: RegisterUserInput)` dengan alur:
-   - **Cek keberadaan email**: Lakukan query ke database untuk memeriksa apakah `email` sudah digunakan:
-     ```typescript
-     const existingUser = await db
-       .select()
-       .from(users)
-       .where(eq(users.email, payload.email))
-       .limit(1);
-     ```
-   - **Validasi duplikasi**: Jika `existingUser.length > 0`, lempar error spesifik (misal: `new Error("Email sudah terdaftar")`).
-   - **Hashing Password**: Gunakan fungsi hashing native Bun dengan algoritma **bcrypt**:
-     ```typescript
-     const hashedPassword = await Bun.password.hash(payload.password, {
-       algorithm: "bcrypt",
-       cost: 10,
-     });
-     ```
-     *(Catatan: Runtime Bun telah memiliki modul hashing bcrypt bawaan melalui `Bun.password`, sehingga tidak memerlukan library tambahan).*
-   - **Simpan ke Database**:
-     ```typescript
-     await db.insert(users).values({
-       name: payload.name,
-       email: payload.email,
-       password: hashedPassword,
-     });
-     ```
-   - **Kembalikan status**: Return hasil atau flag sukses.
-
----
-
-### Langkah 3: Buat Route Layer (`src/routes/users.routes.ts`)
-1. Buat direktori `src/routes/` jika belum ada.
-2. Buat file baru bernama `src/routes/users.routes.ts`.
-3. Gunakan instance `Elysia` dan definisikan route `POST /users` (dengan prefix group `/api` atau path `/api/users`).
-4. Gunakan schema validator bawaan Elysia (`t` dari `elysia`) untuk memvalidasi request body:
+### Langkah 2: Tambahkan Service Login (`src/services/users.services.ts`)
+1. Buka file `src/services/users.services.ts`.
+2. Buat class error khusus atau gunakan penanganan error untuk kredensial tidak valid:
    ```typescript
-   {
-     body: t.Object({
-       name: t.String(),
-       email: t.String({ format: "email" }),
-       password: t.String(),
-     })
+   export class AuthenticationError extends Error {
+     constructor(message = "Email atau password salah") {
+       super(message);
+       this.name = "AuthenticationError";
+     }
    }
    ```
-5. Di dalam handler:
-   - Panggil service `registerUser(body)`.
-   - Jika sukses: kembalikan `{ data: "OK" }` dengan status code `201` atau `200`.
-   - Tangani error duplikasi email: Jika service melempar error `"Email sudah terdaftar"`, set `set.status = 400` dan kembalikan `{ error: "Email sudah terdaftar" }`.
-   - Tangani error tak terduga lainnya dengan status code `500`.
+3. Definisikan tipe input untuk login:
+   ```typescript
+   export interface LoginUserInput {
+     email: string;
+     password: string;
+   }
+   ```
+4. Implementasikan fungsi `loginUserService(input: LoginUserInput)` dengan alur:
+   - **Cari user berdasarkan email**:
+     ```typescript
+     const [user] = await db
+       .select()
+       .from(users)
+       .where(eq(users.email, input.email))
+       .limit(1);
+     ```
+   - **Validasi keberadaan user**: Jika `!user`, lempar `new AuthenticationError("Email atau password salah")`.
+   - **Verifikasi password**: Gunakan fungsi verifikasi hash native dari Bun:
+     ```typescript
+     const isPasswordValid = await Bun.password.verify(input.password, user.password);
+     if (!isPasswordValid) {
+       throw new AuthenticationError("Email atau password salah");
+     }
+     ```
+   - **Generate Token Sesi UUID**: Gunakan fungsi bawaan native JavaScript/Bun:
+     ```typescript
+     const token = crypto.randomUUID();
+     ```
+   - **Simpan Sesi ke Database**:
+     ```typescript
+     await db.insert(sessions).values({
+       token: token,
+       userId: user.id,
+     });
+     ```
+   - **Kembalikan Response**:
+     ```typescript
+     return { data: token };
+     ```
 
 ---
 
-### Langkah 4: Registrasikan Routes ke Server Utama (`src/index.ts`)
-1. Buka file `src/index.ts`.
-2. Import `userRoutes` dari `./routes/users.routes`.
-3. Pasang route ke instance aplikasi Elysia menggunakan `.use(userRoutes)`.
-4. Jalankan dev server untuk memverifikasi tidak ada error saat server dijalankan:
+### Langkah 3: Tambahkan Route Login (`src/routes/users.routes.ts`)
+1. Buka file `src/routes/users.routes.ts`.
+2. Import `loginUserService` dan `AuthenticationError` dari `../services/users.services`.
+3. Tambahkan route handler `POST /users/login` pada instance `usersRoutes`:
+   ```typescript
+   .post(
+     "/users/login",
+     async ({ body, set }) => {
+       try {
+         const result = await loginUserService(body);
+         return result;
+       } catch (error) {
+         if (error instanceof AuthenticationError) {
+           set.status = 400;
+           return {
+             error: error.message,
+           };
+         }
+
+         set.status = 500;
+         return {
+           error: "Terjadi kesalahan pada server",
+         };
+       }
+     },
+     {
+       body: t.Object({
+         email: t.String({ format: "email" }),
+         password: t.String({ minLength: 1 }),
+       }),
+     }
+   )
+   ```
+4. Pastikan route `POST /users/login` berada di bawah prefix `/api` sehingga endpoint lengkapnya adalah `POST /api/users/login`.
+
+---
+
+### Langkah 4: Verifikasi Server & TypeScript Check
+1. Pastikan `src/index.ts` sudah memuat `usersRoutes` (sudah terdaftar dari fitur sebelumnya).
+2. Jalankan typecheck untuk memastikan tidak ada kesalahan tipe data:
+   ```bash
+   bun run typecheck
+   ```
+3. Jalankan server lokal:
    ```bash
    bun run dev
    ```
 
 ---
 
-### Langkah 5: Pengujian & Verifikasi Endpoint
+### Langkah 5: Pengujian & Verifikasi Endpoint (Testing Manual)
 
-Lakukan pengujian manual menggunakan `curl`, Postman, atau REST client lainnya:
+Lakukan pengujian menggunakan `curl` atau REST client:
 
-#### Skenario 1: Registrasi Berhasil
-Kirim request:
+#### Skenario 1: Login Berhasil (Email dan Password Benar)
 ```bash
-curl -X POST http://localhost:3000/api/users \
+curl -X POST http://localhost:3000/api/users/login \
   -H "Content-Type: application/json" \
-  -d '{"name": "Dilan", "email": "dilan@localhost", "password": "rahasia"}'
+  -d '{"email": "dilan@localhost", "password": "rahasia"}'
 ```
 **Ekspektasi Output:**
-- Status Code: `200` atau `201`
+- Status Code: `200 OK`
 - Body:
   ```json
   {
-    "data": "OK"
+    "data": "<uuid-token-string>"
   }
   ```
-- Di Database: Password tersimpan dalam bentuk string hash bcrypt (misal diawali `$2b$` atau `$2a$`), bukan plain text.
+- Di Database: Terdapat record baru di tabel `session` dengan `token` yang sesuai dan `user_id` milik user `dilan@localhost`.
 
-#### Skenario 2: Registrasi dengan Email yang Sama (Duplikat)
-Kirim kembali request yang sama persis seperti pada Skenario 1.
-
-**Ekspektasi Output:**
-- Status Code: `400`
-- Body:
-  ```json
-  {
-    "error": "Email sudah terdaftar"
-  }
-  ```
-
-#### Skenario 3: Request Body Tidak Valid / Kosong
-Kirim request dengan format body salah (misal email tidak ada atau bukan string):
+#### Skenario 2: Login Gagal (Password Salah)
 ```bash
-curl -X POST http://localhost:3000/api/users \
+curl -X POST http://localhost:3000/api/users/login \
   -H "Content-Type: application/json" \
-  -d '{"name": "Dilan"}'
+  -d '{"email": "dilan@localhost", "password": "passwordsalah"}'
+```
+**Ekspektasi Output:**
+- Status Code: `400 Bad Request`
+- Body:
+  ```json
+  {
+    "error": "Email atau password salah"
+  }
+  ```
+
+#### Skenario 3: Login Gagal (Email Tidak Terdaftar)
+```bash
+curl -X POST http://localhost:3000/api/users/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "tidakada@localhost", "password": "rahasia"}'
+```
+**Ekspektasi Output:**
+- Status Code: `400 Bad Request`
+- Body:
+  ```json
+  {
+    "error": "Email atau password salah"
+  }
+  ```
+
+#### Skenario 4: Request Body Tidak Valid / Kosong
+```bash
+curl -X POST http://localhost:3000/api/users/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "bukan-email-valid"}'
 ```
 **Ekspektasi Output:**
 - Status Code: `400` atau `422`
-- Menampilkan pesan error validasi skema dari Elysia.
+- Menampilkan pesan error validasi input dari Elysia TypeBox.
 
 ---
 
 ## 6. Kriteria Keberhasilan (Acceptance Criteria)
 
-- [x] File `src/db/schema.ts` memiliki tabel `users` dengan kolom: `id`, `name`, `email` (unique), `password` (bcrypt hash), dan `create_at` (timestamp default current timestamp).
-- [x] Berhasil melakukan push skema Drizzle ke database (`bun run db:push`).
-- [x] File `src/services/users.services.ts` dibuat dan menangani logika hashing password serta query database.
-- [x] Password disimpan menggunakan hashing bcrypt (menggunakan `Bun.password.hash`).
-- [x] File `src/routes/users.routes.ts` dibuat dengan validasi input Elysia TypeBox.
-- [x] Endpoint `POST /api/users` terdaftar di `src/index.ts`.
-- [x] Request valid mengembalikan `{ "data": "OK" }`.
-- [x] Request dengan email yang sudah ada mengembalikan `{ "error": "Email sudah terdaftar" }` dengan status code `400`.
-- [x] Kode bebas dari TypeScript error (`bun run typecheck`).
+- [x] Tabel `session` didefinisikan di `src/db/schema.ts` dengan kolom `id`, `token` (varchar 255 unique), `user_id` (integer FK ke users), dan `created_at` (timestamp default current timestamp).
+- [x] Berhasil menerapkan perubahan skema ke MySQL menggunakan `bun run db:push`.
+- [x] Token login di-generate menggunakan format UUID valid (`crypto.randomUUID()`).
+- [x] Password diverifikasi menggunakan `Bun.password.verify`.
+- [x] Endpoint `POST /api/users/login` berhasil mengembalikan `{ "data": "<token>" }` dengan status HTTP 200 saat kredensial valid.
+- [x] Record sesi baru tersimpan dengan benar di tabel `session`.
+- [x] Endpoint mengembalikan `{ "error": "Email atau password salah" }` dengan status HTTP 400 saat email tidak ditemukan atau password salah.
+- [x] Request body tidak valid ditolak oleh validator skema Elysia.
+- [x] Project bebas error kompilasi TypeScript (`bun run typecheck`).
