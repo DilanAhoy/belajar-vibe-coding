@@ -1,4 +1,5 @@
 import { Elysia } from "elysia";
+import { usersRoutes } from "./routes/users.routes";
 
 const port = Number(process.env.PORT) || 3000;
 
@@ -12,6 +13,7 @@ export const app = new Elysia()
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   }))
+  .use(usersRoutes)
   .listen(port);
 
 console.log(
