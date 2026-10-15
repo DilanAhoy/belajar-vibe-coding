@@ -134,3 +134,29 @@ export const getCurrentUserService = async (
         : String(record.createAt),
   };
 };
+
+export const logoutUserService = async (authHeader?: string) => {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    throw new UnauthorizedError();
+  }
+
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    throw new UnauthorizedError();
+  }
+
+  const [sessionRecord] = await db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(eq(sessions.token, token))
+    .limit(1);
+
+  if (!sessionRecord) {
+    throw new UnauthorizedError();
+  }
+
+  await db.delete(sessions).where(eq(sessions.token, token));
+
+  return { data: "OK" };
+};
+
