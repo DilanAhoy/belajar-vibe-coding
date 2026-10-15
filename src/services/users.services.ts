@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { users } from "../db/schema";
+import { users, sessions } from "../db/schema";
 import { eq } from "drizzle-orm";
 
 export interface RegisterUserInput {
@@ -8,10 +8,22 @@ export interface RegisterUserInput {
   password: string;
 }
 
+export interface LoginUserInput {
+  email: string;
+  password: string;
+}
+
 export class DuplicateEmailError extends Error {
   constructor(message = "Email sudah terdaftar") {
     super(message);
     this.name = "DuplicateEmailError";
+  }
+}
+
+export class AuthenticationError extends Error {
+  constructor(message = "Email atau password salah") {
+    super(message);
+    this.name = "AuthenticationError";
   }
 }
 
@@ -38,4 +50,34 @@ export const registerUserService = async (input: RegisterUserInput) => {
   });
 
   return { data: "OK" };
+};
+
+export const loginUserService = async (input: LoginUserInput) => {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, input.email))
+    .limit(1);
+
+  if (!user) {
+    throw new AuthenticationError("Email atau password salah");
+  }
+
+  const isPasswordValid = await Bun.password.verify(
+    input.password,
+    user.password
+  );
+
+  if (!isPasswordValid) {
+    throw new AuthenticationError("Email atau password salah");
+  }
+
+  const token = crypto.randomUUID();
+
+  await db.insert(sessions).values({
+    token,
+    userId: user.id,
+  });
+
+  return { data: token };
 };
