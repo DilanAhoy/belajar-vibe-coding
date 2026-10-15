@@ -13,6 +13,13 @@ export interface LoginUserInput {
   password: string;
 }
 
+export interface CurrentUserResponse {
+  id: number;
+  name: string;
+  email: string;
+  created_at: string;
+}
+
 export class DuplicateEmailError extends Error {
   constructor(message = "Email sudah terdaftar") {
     super(message);
@@ -24,6 +31,13 @@ export class AuthenticationError extends Error {
   constructor(message = "Email atau password salah") {
     super(message);
     this.name = "AuthenticationError";
+  }
+}
+
+export class UnauthorizedError extends Error {
+  constructor(message = "Unauthorized") {
+    super(message);
+    this.name = "UnauthorizedError";
   }
 }
 
@@ -80,4 +94,43 @@ export const loginUserService = async (input: LoginUserInput) => {
   });
 
   return { data: token };
+};
+
+export const getCurrentUserService = async (
+  authHeader?: string
+): Promise<CurrentUserResponse> => {
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    throw new UnauthorizedError();
+  }
+
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    throw new UnauthorizedError();
+  }
+
+  const [record] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      createAt: users.createAt,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(sessions.userId, users.id))
+    .where(eq(sessions.token, token))
+    .limit(1);
+
+  if (!record) {
+    throw new UnauthorizedError();
+  }
+
+  return {
+    id: record.id,
+    name: record.name,
+    email: record.email,
+    created_at:
+      record.createAt instanceof Date
+        ? record.createAt.toISOString()
+        : String(record.createAt),
+  };
 };
