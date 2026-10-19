@@ -1,187 +1,130 @@
-# [Bug] Kurangnya Pembatasan Panjang Maksimal (maxLength) pada Input Registrasi User
+# [Task] Implementasi Unit & Integration Test Komprehensif untuk Seluruh Endpoint API
 
-## 1. Ringkasan & Deskripsi Masalah
-Pada endpoint registrasi user (`POST /api/users`), sistem belum membatasi panjang karakter maksimal (`maxLength`) pada field request body, khususnya pada atribut `name`. 
+## 1. Ringkasan & Tujuan
+Tugas ini bertujuan untuk membangun *automated test suite* (unit & integration test) yang komprehensif untuk seluruh endpoint API yang tersedia di aplikasi. Pengujian ini bertujuan memastikan kestabilan fitur autentikasi dan manajemen user, mencegah terjadinya regresi di masa depan, serta memverifikasi kepatuhan terhadap kontrak API dan aturan validasi.
 
-Ketika client mengirimkan payload registrasi dengan nilai `name` sepanjang 300 karakter (melebihi kapasitas kolom database `VARCHAR(255)`):
-1. **Pada database non-strict mode (default XAMPP/MariaDB)**: Request lolos dengan status `200 OK`, namun nilai `name` dipotong secara diam-diam (*silent data loss / truncation*) menjadi 255 karakter saat disimpan ke database.
-2. **Pada database strict mode (`STRICT_TRANS_TABLES` / Production MySQL)**: Operasi `INSERT` akan melempar fatal error `ER_DATA_TOO_LONG: Data too long for column 'name' at row 1`, yang menyebabkan server merespons dengan status `500 Terjadi kesalahan pada server` alih-alih ditolak rapi pada layer validasi request.
-
-Dokumen ini disusun sebagai panduan perbaikan yang presisi dan bertahap agar dapat diimplementasikan oleh junior programmer atau model AI.
+Perencanaan ini dirancang terstruktur dan jelas mengenai **apa saja skenario yang harus diuji**, sedangkan penulisan detail kode implementasinya diserahkan kepada programmer / model AI pelaksana.
 
 ---
 
-## 2. Analisis Akar Masalah (Root Cause)
-
-1. **Layer Route & Validator (`src/routes/users.routes.ts`)**:
-   Skema validasi TypeBox saat ini hanya memvalidasi `minLength: 1` tanpa menentukan `maxLength`:
-   ```typescript
-   body: t.Object({
-     name: t.String({ minLength: 1 }),
-     email: t.String({ minLength: 1 }),
-     password: t.String({ minLength: 1 }),
-   })
-   ```
-2. **Layer Database Skema (`src/db/schema.ts`)**:
-   Kolom `name` dan `email` didefinisikan dengan tipe `varchar(255)`:
-   ```typescript
-   name: varchar("name", { length: 255 }).notNull(),
-   email: varchar("email", { length: 255 }).notNull().unique(),
-   ```
-   Karena batas maksimal tidak diverifikasi di route validator, request payload dengan ukuran sembarang (> 255 karakter) diteruskan langsung ke query database.
+## 2. Standar & Lingkungan Pengujian
+- **Test Runner**: Gunakan test runner bawaan Bun (`bun:test`).
+- **Lokasi File**: Simpan seluruh file pengujian di dalam folder `tests/` (misalnya `tests/users.test.ts` atau dipisah per modul).
+- **Perintah Eksekusi**: Pengujian harus dapat dijalankan dengan perintah:
+  ```bash
+  bun test
+  ```
+- **Kepatuhan Tipe**: Seluruh kode test harus lolos pemeriksaan tipe TypeScript (`bun run typecheck`).
 
 ---
 
-## 3. Langkah Reproduksi Bug (Steps to Reproduce)
-
-1. Jalankan aplikasi backend (`bun src/index.ts` atau `bun run dev`).
-2. Kirim request HTTP POST ke endpoint registrasi dengan payload `name` berisi string 300 karakter:
-   ```bash
-   curl -X POST http://localhost:3000/api/users \
-     -H "Content-Type: application/json" \
-     -d '{
-       "name": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-       "email": "test_bug_length@localhost",
-       "password": "password123"
-     }'
-   ```
-3. Periksa status respons server dan data di database:
-   - Server mengembalikan `200 OK: { "data": "OK" }`.
-   - Query record di database: `SELECT LENGTH(name), name FROM users WHERE email = 'test_bug_length@localhost';`.
-   - Terlihat data `name` terpotong tepat pada panjang 255 karakter (*silent truncation*).
+## 3. Strategi Isolasi & Pembersihan Data (Data Clean-up)
+Untuk menjaga konsistensi dan mencegah efek samping antar-test:
+- **Pembersihan Data Otomatis**: Setiap skenario (atau sebelum/sesudah setiap unit pengujian dijalankan via hook `beforeEach` / `afterEach`), data pada tabel `session` dan `users` yang berkaitan dengan pengujian harus dibersihkan terlebih dahulu.
+- **Konsistensi State**: Pastikan tidak ada data sisa dari test sebelumnya yang menyebabkan test berikutnya gagal (*flaky test*).
+- **Penutupan Koneksi**: Di akhir pengujian suite, pastikan koneksi pool database ditutup dengan aman (`afterAll`).
 
 ---
 
-## 4. Perilaku Saat Ini vs Perilaku yang Diharapkan
+## 4. Matriks Skenario Pengujian per Endpoint
 
-| Skenario | Perilaku Saat Ini (Bug) | Perilaku yang Diharapkan (Expected) |
-| :--- | :--- | :--- |
-| `name` > 255 karakter | Lolos validasi, mengembalikan 200 OK (atau 500 jika strict mode), data terpotong di DB | Ditolak oleh validator route, mengembalikan **400 Bad Request** dengan pesan error yang jelas |
-| `email` > 255 karakter | Lolos validasi, berpotensi gagal di DB | Ditolak oleh validator route dengan **400 Bad Request** |
-| `password` terlalu panjang (> 100 karakter) | Diproses oleh hashing bcrypt (beban komputasi tinggi / DoS risk) | Ditolak dengan **400 Bad Request** jika melebihi batas wajar (misal: 100 karakter) |
+Pelaksana diharapkan mengimplementasikan skenario-skenario berikut:
 
----
+### A. Endpoint: `POST /api/users` (Registrasi Pengguna)
 
-## 5. Spesifikasi Kontrak API Setelah Perbaikan
+#### 1. Skenario Positif (Sukses):
+- **Registrasi Berhasil**: Mengirimkan data `name`, `email`, dan `password` yang valid.
+  - Ekspektasi: HTTP `200 OK`, response body `{ "data": "OK" }`.
+  - Verifikasi DB: Password tersimpan dalam bentuk hash bcrypt (bukan plain text), email tersimpan dengan benar.
+- **Batas Panjang Minimum (Edge Case)**: `name`, `email`, dan `password` dengan panjang batas minimal yang valid (1 karakter untuk name & password).
+- **Batas Panjang Maksimum (Edge Case)**: `name` sepanjang 255 karakter dan `email` sepanjang 255 karakter dapat tersimpan dengan benar tanpa terpotong.
 
-### Endpoint:
-`POST /api/users`
-
-### Aturan Validasi Request Body:
-- `name`: Tipe `string`, minimal 1 karakter (`minLength: 1`), maksimal 255 karakter (`maxLength: 255`).
-- `email`: Tipe `string`, format email valid (`format: "email"`), minimal 1 karakter, maksimal 255 karakter (`maxLength: 255`).
-- `password`: Tipe `string`, minimal 1 karakter (`minLength: 1`), maksimal 100 karakter (`maxLength: 100`).
-
-### Ekspektasi Response Body:
-- **Valid (Panjang Sesuai Batas)**:
-  - Status: `200 OK` atau `201 Created`
-  - Body: `{ "data": "OK" }`
-- **Invalid (`name` > 255 karakter)**:
-  - Status: `400 Bad Request`
-  - Body:
-    ```json
-    {
-      "error": "Expected string length less than or equal to 255"
-    }
-    ```
-    *(atau pesan error validasi TypeBox Elysia terkait property name)*
+#### 2. Skenario Negatif & Validasi:
+- **Email Duplikat**: Mencoba mendaftarkan user dengan email yang sudah ada di database.
+  - Ekspektasi: HTTP `400 Bad Request`, body `{ "error": "Email sudah terdaftar" }`.
+- **Format Email Tidak Valid**: Mengirimkan email yang tidak sesuai format email standar (misal `"bukan-email"`).
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Nama Terlalu Panjang**: Mengirimkan `name` lebih dari 255 karakter (misal 256 atau 300 karakter).
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Email Terlalu Panjang**: Mengirimkan `email` lebih dari 255 karakter.
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Password Terlalu Panjang**: Mengirimkan `password` lebih dari 100 karakter.
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Field Wajib Kosong / Hilang**: Request body kosong `{}`, atau salah satu field (`name`/`email`/`password`) tidak disertakan.
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Tipe Data Tidak Sesuai**: Mengirimkan tipe data selain string (misal `name` berupa angka atau boolean).
+  - Ekspektasi: HTTP `400 Bad Request`.
 
 ---
 
-## 6. Tahapan Perbaikan Langkah-demi-Langkah
+### B. Endpoint: `POST /api/users/login` (Login Pengguna)
 
-Ikuti urutan langkah kerja berikut ini secara berurutan:
+#### 1. Skenario Positif (Sukses):
+- **Login Berhasil**: Mengirimkan `email` dan `password` yang benar dari user yang sudah terdaftar.
+  - Ekspektasi: HTTP `200 OK`, response body mengembalikan format `{ "data": "<token_string>" }`.
+  - Verifikasi DB: Record sesi baru dengan token tersebut dan `user_id` yang sesuai tersimpan di tabel `session`.
 
-### Langkah 1: Perbarui Skema Validasi Body di Route (`src/routes/users.routes.ts`)
-1. Buka file `src/routes/users.routes.ts`.
-2. Pada definisi route `POST /users`, perbarui schema validator TypeBox pada opsi `body`:
-   ```typescript
-   {
-     body: t.Object({
-       name: t.String({
-         minLength: 1,
-         maxLength: 255,
-       }),
-       email: t.String({
-         minLength: 1,
-         maxLength: 255,
-         format: "email",
-       }),
-       password: t.String({
-         minLength: 1,
-         maxLength: 100,
-       }),
-     }),
-   }
-   ```
-3. Simpan perubahan file.
+#### 2. Skenario Negatif & Validasi:
+- **Email Tidak Terdaftar**: Mencoba login dengan email yang belum pernah didaftarkan.
+  - Ekspektasi: HTTP `400 Bad Request`, body `{ "error": "Email atau password salah" }`.
+- **Password Salah**: Menggunakan email yang valid tetapi password salah.
+  - Ekspektasi: HTTP `400 Bad Request`, body `{ "error": "Email atau password salah" }`.
+- **Format Email Salah**: Mengirimkan field email yang tidak valid formatnya.
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Field Kosong / Hilang**: Request body tidak menyertakan email atau password.
+  - Ekspektasi: HTTP `400 Bad Request`.
+- **Panjang Karakter Melebihi Batas**: Mengirimkan email > 255 karakter atau password > 100 karakter.
+  - Ekspektasi: HTTP `400 Bad Request`.
 
 ---
 
-### Langkah 2: Tambahkan Automated Test Case (`tests/users.test.ts`)
-1. Buka file `tests/users.test.ts`.
-2. Pada suite `describe("Validation Errors", ...)`, tambahkan unit test untuk memvalidasi batas maksimal panjang input:
-   ```typescript
-   it("should return 400 when registration name exceeds 255 characters", async () => {
-     const longName = "A".repeat(256);
-     const res = await app.handle(
-       new Request("http://localhost/api/users", {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-           name: longName,
-           email: "valid_email@localhost",
-           password: "password123",
-         }),
-       })
-     );
+### C. Endpoint: `GET /api/users/current` (Profil Pengguna Aktif)
 
-     expect(res.status).toBe(400);
-     const data = await res.json();
-     expect(data).toHaveProperty("error");
-   });
+#### 1. Skenario Positif (Sukses):
+- **Get Profile Berhasil**: Mengirimkan header `Authorization: Bearer <valid_token>`.
+  - Ekspektasi: HTTP `200 OK`.
+  - Struktur Response: Mengembalikan properti `data` yang memuat `id`, `name`, `email`, dan `created_at`.
+  - Keamanan: Memastikan kolom sensitif `password` **tidak ada** pada response body.
 
-   it("should return 400 when registration email exceeds 255 characters", async () => {
-     const longEmail = "a".repeat(250) + "@localhost.com";
-     const res = await app.handle(
-       new Request("http://localhost/api/users", {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-           name: "Valid Name",
-           email: longEmail,
-           password: "password123",
-         }),
-       })
-     );
-
-     expect(res.status).toBe(400);
-     const data = await res.json();
-     expect(data).toHaveProperty("error");
-   });
-   ```
+#### 2. Skenario Negatif & Autentikasi:
+- **Tanpa Header Authorization**: Memanggil endpoint tanpa mengirimkan header `Authorization`.
+  - Ekspektasi: HTTP `401 Unauthorized`, body `{ "error": "Unauthorized" }`.
+- **Format Authorization Bukan Bearer**: Mengirimkan format skema lain (misalnya `Authorization: Basic 12345` atau `Token xxx`).
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **Token Kosong**: Mengirimkan header `Authorization: Bearer ` tanpa token string.
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **Token Palsu / Tidak Dikenal**: Mengirimkan token acak yang tidak tercatat pada tabel `session`.
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **User Terhapus**: Token ada di tabel `session`, tetapi record user pemilik sesi sudah dihapus dari tabel `users`.
+  - Ekspektasi: HTTP `401 Unauthorized`.
 
 ---
 
-### Langkah 3: Verifikasi Test & TypeScript Typecheck
-1. Jalankan test otomatis:
-   ```bash
-   bun test
-   ```
-   Pastikan seluruh skenario test (termasuk skenario baru untuk `maxLength`) berstatus **PASS**.
-2. Jalankan pemeriksaan tipe data:
-   ```bash
-   bun run typecheck
-   ```
-   Pastikan tidak ada error TypeScript (`0 errors`).
+### D. Endpoint: `DELETE /api/users/logout` (Logout Pengguna)
+
+#### 1. Skenario Positif (Sukses):
+- **Logout Berhasil**: Mengirimkan header `Authorization: Bearer <valid_token>`.
+  - Ekspektasi: HTTP `200 OK`, response body `{ "data": "OK" }`.
+  - Verifikasi DB: Record sesi dengan token tersebut harus **terhapus** dari tabel `session`.
+  - Verifikasi Akses Lanjutan: Token yang baru saja logout diverifikasi tidak bisa lagi dipakai untuk mengakses `GET /api/users/current` (harus menghasilkan HTTP `401 Unauthorized`).
+
+#### 2. Skenario Negatif & Autentikasi:
+- **Tanpa Header Authorization**: Request logout tanpa header.
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **Format Header Tidak Valid**: Header bukan berformat `Bearer <token>`.
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **Token Tidak Ditemukan**: Mengirimkan token yang memang tidak ada di database.
+  - Ekspektasi: HTTP `401 Unauthorized`.
+- **Double Logout (Idempotency Check)**: Mencoba logout kedua kali menggunakan token yang sama setelah sukses logout pertama kali.
+  - Ekspektasi: HTTP `401 Unauthorized`.
 
 ---
 
-## 7. Kriteria Keberhasilan (Acceptance Criteria)
+## 5. Kriteria Keberhasilan (Acceptance Criteria)
 
-- [x] Skema validasi `body` pada endpoint `POST /api/users` di `src/routes/users.routes.ts` memiliki batasan `maxLength: 255` untuk `name` dan `email`, serta `maxLength: 100` untuk `password`.
-- [x] Format email diverifikasi dengan `format: "email"` pada skema TypeBox.
-- [x] Request registrasi dengan `name` sepanjang > 255 karakter (seperti 300 karakter) otomatis ditolak dengan HTTP `400 Bad Request` sebelum masuk ke service/database.
-- [x] Tidak ada lagi pemotongan data (*silent truncation*) pada database.
-- [x] Penambahan unit test baru di `tests/users.test.ts` untuk kasus batas panjang input lolos pengujian (`bun test`).
+- [x] File pengujian berada di dalam direktori `tests/` menggunakan framework `bun:test`.
+- [x] Mekanisme pembersihan data (`cleanup`) diterapkan sebelum/sesudah pengujian skenario agar terisolasi dan konsisten.
+- [x] Semua skenario pengujian pada Bagian 4 (Endpoint Registrasi, Login, Current User, dan Logout) diimplementasikan.
+- [x] Menangani pengujian status code (200, 400, 401) dan response body sesuai spesifikasi masing-masing endpoint.
+- [x] Seluruh skenario pengujian berstatus lulus saat dijalankan dengan perintah `bun test` (100% pass, 0 fail).
 - [x] Proyek lolos pemeriksaan tipe TypeScript (`bun run typecheck`).
