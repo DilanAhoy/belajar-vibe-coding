@@ -85,6 +85,81 @@ describe("Users Routes & Error Handling", () => {
       const data = await res.json();
       expect(data).toHaveProperty("error");
     });
+
+    it("should return 400 when registration name exceeds 255 characters", async () => {
+      const longName = "A".repeat(256);
+      const res = await app.handle(
+        new Request("http://localhost/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: longName,
+            email: "valid_email@localhost",
+            password: "password123",
+          }),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data).toHaveProperty("error");
+    });
+
+    it("should return 400 when registration email exceeds 255 characters", async () => {
+      const longEmail = "a".repeat(250) + "@localhost.com";
+      const res = await app.handle(
+        new Request("http://localhost/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Valid Name",
+            email: longEmail,
+            password: "password123",
+          }),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data).toHaveProperty("error");
+    });
+
+    it("should return 400 when registration email format is invalid", async () => {
+      const res = await app.handle(
+        new Request("http://localhost/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Valid Name",
+            email: "not-an-email",
+            password: "password123",
+          }),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data).toHaveProperty("error");
+    });
+
+    it("should return 400 when registration password exceeds 100 characters", async () => {
+      const longPassword = "p".repeat(101);
+      const res = await app.handle(
+        new Request("http://localhost/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Valid Name",
+            email: "valid@localhost.com",
+            password: longPassword,
+          }),
+        })
+      );
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data).toHaveProperty("error");
+    });
   });
 
   describe("Protected Endpoints Authorization Handling", () => {
