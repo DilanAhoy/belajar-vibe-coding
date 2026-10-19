@@ -96,10 +96,8 @@ export const loginUserService = async (input: LoginUserInput) => {
   return { data: token };
 };
 
-export const getCurrentUserService = async (
-  authHeader?: string
-): Promise<CurrentUserResponse> => {
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+export const extractBearerToken = (authHeader?: string): string => {
+  if (!authHeader || !/^Bearer\s+/i.test(authHeader)) {
     throw new UnauthorizedError();
   }
 
@@ -107,6 +105,14 @@ export const getCurrentUserService = async (
   if (!token) {
     throw new UnauthorizedError();
   }
+
+  return token;
+};
+
+export const getCurrentUserService = async (
+  authHeader?: string
+): Promise<CurrentUserResponse> => {
+  const token = extractBearerToken(authHeader);
 
   const [record] = await db
     .select({
@@ -136,26 +142,13 @@ export const getCurrentUserService = async (
 };
 
 export const logoutUserService = async (authHeader?: string) => {
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const token = extractBearerToken(authHeader);
+
+  const [result] = await db.delete(sessions).where(eq(sessions.token, token));
+
+  if ((result as unknown as { affectedRows: number }).affectedRows === 0) {
     throw new UnauthorizedError();
   }
-
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!token) {
-    throw new UnauthorizedError();
-  }
-
-  const [sessionRecord] = await db
-    .select({ id: sessions.id })
-    .from(sessions)
-    .where(eq(sessions.token, token))
-    .limit(1);
-
-  if (!sessionRecord) {
-    throw new UnauthorizedError();
-  }
-
-  await db.delete(sessions).where(eq(sessions.token, token));
 
   return { data: "OK" };
 };

@@ -10,25 +10,40 @@ import {
 } from "../services/users.services";
 
 export const usersRoutes = new Elysia({ prefix: "/api" })
+  .onError(({ error, code, set }) => {
+    if (
+      error instanceof DuplicateEmailError ||
+      error instanceof AuthenticationError
+    ) {
+      set.status = 400;
+      return {
+        error: error.message,
+      };
+    }
+
+    if (error instanceof UnauthorizedError) {
+      set.status = 401;
+      return {
+        error: error.message,
+      };
+    }
+
+    if (code === "VALIDATION") {
+      set.status = 400;
+      return {
+        error: error.message,
+      };
+    }
+
+    set.status = 500;
+    return {
+      error: "Terjadi kesalahan pada server",
+    };
+  })
   .post(
     "/users",
-    async ({ body, set }) => {
-      try {
-        const result = await registerUserService(body);
-        return result;
-      } catch (error) {
-        if (error instanceof DuplicateEmailError) {
-          set.status = 400;
-          return {
-            error: error.message,
-          };
-        }
-
-        set.status = 500;
-        return {
-          error: "Terjadi kesalahan pada server",
-        };
-      }
+    async ({ body }) => {
+      return await registerUserService(body);
     },
     {
       body: t.Object({
@@ -40,23 +55,8 @@ export const usersRoutes = new Elysia({ prefix: "/api" })
   )
   .post(
     "/users/login",
-    async ({ body, set }) => {
-      try {
-        const result = await loginUserService(body);
-        return result;
-      } catch (error) {
-        if (error instanceof AuthenticationError) {
-          set.status = 400;
-          return {
-            error: error.message,
-          };
-        }
-
-        set.status = 500;
-        return {
-          error: "Terjadi kesalahan pada server",
-        };
-      }
+    async ({ body }) => {
+      return await loginUserService(body);
     },
     {
       body: t.Object({
@@ -65,49 +65,14 @@ export const usersRoutes = new Elysia({ prefix: "/api" })
       }),
     }
   )
-  .get(
-    "/users/current",
-    async ({ headers, set }) => {
-      try {
-        const authHeader = headers["authorization"];
-        const user = await getCurrentUserService(authHeader);
-        return {
-          data: user,
-        };
-      } catch (error) {
-        if (error instanceof UnauthorizedError) {
-          set.status = 401;
-          return {
-            error: error.message,
-          };
-        }
-
-        set.status = 500;
-        return {
-          error: "Terjadi kesalahan pada server",
-        };
-      }
-    }
-  )
-  .delete(
-    "/users/logout",
-    async ({ headers, set }) => {
-      try {
-        const authHeader = headers["authorization"];
-        const result = await logoutUserService(authHeader);
-        return result;
-      } catch (error) {
-        if (error instanceof UnauthorizedError) {
-          set.status = 401;
-          return {
-            error: error.message,
-          };
-        }
-
-        set.status = 500;
-        return {
-          error: "Terjadi kesalahan pada server",
-        };
-      }
-    }
-  );
+  .get("/users/current", async ({ headers }) => {
+    const authHeader = headers["authorization"];
+    const user = await getCurrentUserService(authHeader);
+    return {
+      data: user,
+    };
+  })
+  .delete("/users/logout", async ({ headers }) => {
+    const authHeader = headers["authorization"];
+    return await logoutUserService(authHeader);
+  });
